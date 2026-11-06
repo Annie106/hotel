@@ -10,11 +10,13 @@
   }
   if (!T) { fail('3D 引擎未能加载，请确认 vendor/three.global.js 存在。'); return; }
 
-  /* ---------- 设备能力分级 ---------- */
+  /* ---------- 设备判定 ----------
+     TOUCH 只用于手势灵敏度与提示；渲染画质在桌面 / 移动端完全一致，不做任何降级。 */
   var coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
-  var LOW = coarse || /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent)
+  var TOUCH = coarse || /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent)
     || Math.min(window.innerWidth, window.innerHeight) < 480;
-  var dynamicDPR = Math.min(window.devicePixelRatio || 1, LOW ? 1.5 : 1.8);
+  /* 完整跟随设备像素比（主流 1~3），只挡住异常值；不因移动端降低 */
+  function curDPR() { return Math.min(window.devicePixelRatio || 1, 3); }
 
   /* ---------- 渲染器 ---------- */
   var canvas = document.getElementById('scene');
@@ -22,16 +24,20 @@
   try {
     renderer = new T.WebGLRenderer({
       canvas: canvas,
-      antialias: !LOW,                                   /* 移动端省下 MSAA 开销 */
-      powerPreference: LOW ? 'default' : 'high-performance'
+      antialias: true,
+      powerPreference: 'high-performance'
     });
   } catch (e) {
     fail('当前浏览器无法创建 WebGL 上下文，请改用 Chrome / Edge 并开启硬件加速。'); return;
   }
-  renderer.setPixelRatio(dynamicDPR);
+  renderer.setPixelRatio(curDPR());
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = LOW ? T.PCFShadowMap : T.PCFSoftShadowMap;
+  renderer.shadowMap.type = T.PCFSoftShadowMap;
+  /* 场景是静态的：阴影贴图只在光照 / 可见性变化时重建。
+     逐帧跳过阴影 pass，画质完全不变，却省掉移动端最大的一笔 GPU 开销。 */
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = true;
   renderer.toneMapping = T.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.12;
   renderer.outputColorSpace = T.SRGBColorSpace;
@@ -259,9 +265,8 @@
 
   /* 云带 */
   var clouds = [];
-  var cloudCount = LOW ? 10 : 19; /* 移动端减少透明混合层 */
-  for (var ci = 0; ci < cloudCount; ci++) {
-    var low = ci >= (LOW ? 4 : 8);
+  for (var ci = 0; ci < 19; ci++) {
+    var low = ci >= 8;
     var cm = new T.SpriteMaterial({
       map: cloudTex, transparent: true,
       opacity: low ? rr(.24, .46) : rr(.16, .34),
@@ -297,7 +302,7 @@
   var ambient = new T.AmbientLight(0xb9c5d8, 0.32); scene.add(ambient);
   var sunLight = new T.DirectionalLight(0xffb877, 2.6);
   sunLight.castShadow = true;
-  sunLight.shadow.mapSize.set(LOW ? 1024 : 2048, LOW ? 1024 : 2048);
+  sunLight.shadow.mapSize.set(2048, 2048);
   var sc = sunLight.shadow.camera;
   sc.left = -55; sc.right = 55; sc.top = 55; sc.bottom = -55; sc.near = 1; sc.far = 240;
   sunLight.shadow.bias = -0.00025; sunLight.shadow.normalBias = 0.035;
@@ -749,6 +754,7 @@
     document.getElementById('swFurniture').classList.toggle('on', state.furniture);
     document.getElementById('swLights').classList.toggle('on', state.lights);
     document.getElementById('swRotate').classList.toggle('on', state.rotate);
+    renderer.shadowMap.needsUpdate = true; /* 屋顶/家具/楼层变化会改变投影物体 */
   }
 
   /* ---------- 时间 / 光照 ---------- */
@@ -767,6 +773,7 @@
     var lightDir = new T.Vector3(-0.70, 0.30 + sy * 0.16, -0.66).normalize();
     sunLight.position.copy(lightDir).multiplyScalar(85);
     sunLight.target.position.set(0, 0, 0);
+    renderer.shadowMap.needsUpdate = true; /* 太阳角度变了，重算一次阴影贴图 */
     skyU.uSunDir.value.copy(sunDir);
     skyU.uZenith.value.copy(skyZenithA).lerp(skyZenithB, Math.pow(t, 1.4));
     skyU.uHorizon.value.copy(skyHorA).lerp(skyHorB, Math.pow(t, 1.5));
@@ -835,7 +842,7 @@
   /* 鼠标 / 触摸统一走 Pointer Events；移动端双指 = 缩放 + 平移 */
   var pointers = new Map(), lastX = 0, lastY = 0, panMode = false;
   var pinch = 0, midX = null, midY = null;
-  var ROT_K = LOW ? .0042 : .005;
+  var ROT_K = TOUCH ? .0042 : .005;
   function clampR(v) { return Math.max(7, Math.min(130, v)); }
   function panBy(dx, dy) {
     var right = new T.Vector3(Math.cos(cam.theta), 0, -Math.sin(cam.theta));
@@ -875,7 +882,7 @@
     if (panMode) panBy(dx, dy);
     else {
       cam.tTheta -= dx * ROT_K;
-      cam.tPhi = Math.max(.12, Math.min(1.50, cam.tPhi - dy * (LOW ? .0036 : .004)));
+      cam.tPhi = Math.max(.12, Math.min(1.50, cam.tPhi - dy * (TOUCH ? .0036 : .004)));
     }
   });
   function endPtr(e) {
@@ -944,7 +951,7 @@
     camera.fov = aspect < .85 ? 64 : 52;
     camera.updateProjectionMatrix();
     fitR = aspect < .85 ? Math.min(1.62, 1.15 + (.85 - aspect) * 1.1) : 1;
-    renderer.setPixelRatio(dynamicDPR);
+    renderer.setPixelRatio(curDPR()); /* 跨屏 / 缩放 / 横竖屏切换时重新读取 */
     renderer.setSize(w, h);
   }
   function refit() {
@@ -974,10 +981,9 @@
   applyVisibility();
   var hv = (location.hash || '').replace('#', '');
   if (VIEWS[hv]) gotoView(hv);
-  if (LOW) setTimeout(hideHint, 4500);
+  if (TOUCH) setTimeout(hideHint, 4500);
   updateCam(1);
   var last = performance.now();
-  var perfFrames = 0, perfTime = 0, perfChecked = false;
   function tick(now) {
     var dt = Math.min((now - last) / 1000, .05); last = now;
     updateCam(dt);
@@ -988,18 +994,6 @@
       if (clouds[i].position.x > 265) clouds[i].position.x = -265;
     }
     renderer.render(scene, camera);
-    /* 前 3 秒采样帧率，低端机自动把像素比降到 1 保流畅 */
-    if (!perfChecked) {
-      perfFrames++; perfTime += dt;
-      if (perfTime >= 3) {
-        perfChecked = true;
-        if (perfFrames / perfTime < 28 && dynamicDPR > 1) {
-          dynamicDPR = 1;
-          renderer.setPixelRatio(1);
-          renderer.setSize(window.innerWidth, window.innerHeight);
-        }
-      }
-    }
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
